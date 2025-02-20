@@ -18,7 +18,7 @@ ENV ENV=prod \
 # Install GCC and build tools. 
 # These are kept in the final image to enable installing packages on the fly.
 RUN apt-get update && \
-    apt-get install -y gcc build-essential curl git && \
+    apt-get install -y gcc build-essential curl git wget && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -28,6 +28,8 @@ WORKDIR /app
 COPY ./requirements.txt .
 COPY ./requirements-minimum.txt .
 RUN pip3 install uv
+
+# Handle CUDA installations if needed
 RUN if [ "$MINIMUM_BUILD" != "true" ]; then \
         if [ "$USE_CUDA_DOCKER" = "true" ]; then \
             pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/$USE_CUDA_DOCKER_VER --no-cache-dir; \
@@ -35,31 +37,40 @@ RUN if [ "$MINIMUM_BUILD" != "true" ]; then \
             pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; \    
         fi \
     fi
+
+# Install requirements based on build type
 RUN if [ "$MINIMUM_BUILD" = "true" ]; then \
         uv pip install --system -r requirements-minimum.txt --no-cache-dir; \
     else \
         uv pip install --system -r requirements.txt --no-cache-dir; \
     fi
 
-
 # Layer on for other components
 FROM base AS app
 
+# Set environment variables for pipelines
 ENV PIPELINES_URLS=${PIPELINES_URLS} \
     PIPELINES_REQUIREMENTS_PATH=${PIPELINES_REQUIREMENTS_PATH}
 
 # Copy the application code
 COPY . .
 
-# Run a docker command if either PIPELINES_URLS or PIPELINES_REQUIREMENTS_PATH is not empty
+# Ensure start.sh is executable
+RUN chmod +x ./start.sh
+
+# Run setup if pipeline configurations are provided
 RUN if [ -n "$PIPELINES_URLS" ] || [ -n "$PIPELINES_REQUIREMENTS_PATH" ]; then \
     echo "Running docker command with PIPELINES_URLS or PIPELINES_REQUIREMENTS_PATH"; \
     ./start.sh --mode setup; \
     fi
 
-# Expose the port
+# Configure networking
 ENV HOST="0.0.0.0"
 ENV PORT="9099"
 
-# if we already installed the requirements on build, we can skip this step on run
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:9099/ || exit 1
+
+# Set entrypoint
 ENTRYPOINT [ "bash", "start.sh" ]
